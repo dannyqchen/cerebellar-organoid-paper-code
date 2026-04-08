@@ -1,0 +1,283 @@
+---
+title: "hCBO: geneset stats "
+author: "Qiang (Danny) Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    keep_md: true
+    highlight: tango
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: no
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  bibliography: biblio.bib
+vignette: |
+  %\VignetteIndexEntry{RNASeq} %\VignetteEngine{knitr::rmarkdown} %\VignetteEncoding{UTF-8} %\usepackage[utf8]{inputenc}
+---
+
+We integrated SCTL samples at day60 in our 2 month-old hCBO data with the following two datasets and identified DEGs among cerebellar markers across protocols. 
+
+For the quadrato lab, we focused on three samples below (they generated three replicates at day 60):  
+[GSE247974](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE247974)
+GSM7904010: organoid D1, scRNA-seq  
+GSM7904011: organoid D2, scRNA-seq  
+GSM7904012: organoid D3, scRNA-seq  
+
+For the pasca lab, we only focused on one sample (at day 72) below:  
+[GSE233574](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE233574)
+GSM7430706: OrganoidScreen; sample11; FGF2-50  
+
+There is only one sample (GSM7430706) in GSE233574. We did sub-sampling in cells of GSM7430706 and calculated psudo-bulk of sub-samples for comparisons. 
+
+
+```{r setup, echo=T, results="hide", message=F}
+# knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, echo=TRUE, dev="png", message=FALSE, error=FALSE, warning=FALSE)
+knitr::opts_chunk$set(echo=TRUE, warning=F, message=F)
+
+library("tidyr")
+library("dplyr")
+library("ggplot2")
+library("knitr")
+library("pheatmap")
+library("DT")
+library("car")
+library("lme4")
+library("emmeans")
+
+rm(list=ls())
+
+d_meta = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/Data/"
+d_proj = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/SCTLday60_GSE247974_GSE233574/"
+d_dat  = paste0(d_proj, "Data/")
+d_res  = paste0(d_proj, "Results/")
+
+
+```
+
+# Load data
+
+```{r load, eval=T, echo=T, results='hide'}
+
+f_cb = paste0(d_meta, "Full_Brain_Region_Marker_Table_Ryu_et_al.csv")
+gene_data = read.csv(f_cb)
+
+f_sample = paste0(d_dat, "sample_info.SCTLday60_GSE247974_GSE233574.tsv")
+sampleInfo = read.table(f_sample, sep="\t", header=T)
+
+sctl_samples = sampleInfo[sampleInfo$Protocol=="SCTLday60", "ID"]
+
+f_norm = paste0(d_dat, "norm_counts.SCTLday60_GSE247974_GSE233574.CerebellarGenes.rds")
+norm_counts = as.data.frame(readRDS(f_norm))
+
+norm_data = as.data.frame(cbind(Gene=rownames(norm_counts), norm_counts))
+
+norm_data = pivot_longer(norm_data, 
+    cols = 2:ncol(norm_data), 
+    names_to = "ID", 
+    values_to = "Count")
+
+norm_data = merge(norm_data, sampleInfo, by="ID")
+
+
+```
+
+# Geneset stats for cell types:
+
+Bergmann glia  
+Deep cerebellar nuclei (excitatory/inhibitory)  
+Endothelial  
+Golgi cell  
+Granule cell / lineage  
+Microglia  
+Molecular layer interneuron (basket/stellate)  
+Oligodendrocyte / OPC  
+Pericyte / SMC   
+Purkinje neuron  
+Unipolar brush cell (UBC)  
+
+
+Mixed effect model was used to compare protocols
+
+```{r cell_score, echo=T, message=T, warning=F, collapse=T}
+
+celltypes = c("Bergmann glia", "Deep cerebellar nuclei (excitatory/inhibitory)", 
+    "Endothelial", "Golgi cell", "Granule cell / lineage", "Microglia", 
+    "Molecular layer interneuron (basket/stellate)", "Oligodendrocyte / OPC", 
+    "Pericyte / SMC", "Purkinje neuron", "Unipolar brush cell (UBC)")
+
+test_gene_data = gene_data[gene_data$CellType_subclass %in% celltypes, ]
+
+test_count_data = norm_data[norm_data$Gene %in% test_gene_data$MarkerGene, ]
+dim(test_count_data)
+
+contrasts = list()
+contrasts[[1]] = c("SCTLday60", "GSE233574")
+contrasts[[2]] = c("SCTLday60", "GSE247974")
+
+nconts = length(contrasts)
+
+statList = lapply(1:nconts, function(icont) {
+    
+    print(icont)
+
+    statList = lapply(celltypes, function(celltype) {
+
+        print(celltype)
+    
+        geneset = unique(test_gene_data[test_gene_data$CellType_subclass==celltype, "MarkerGene"])
+
+        cur_protocols = as.vector(contrasts[[icont]])
+        
+        cur_counts = test_count_data[which( (test_count_data$Gene %in% geneset) & (test_count_data$Protocol %in% cur_protocols) ), ]
+        cur_counts$Protocol = factor(cur_counts$Protocol, levels=cur_protocols)
+        cur_counts$Gene = as.factor(cur_counts$Gene)
+
+        model = lmer(Count ~ Protocol + (1 | Gene), data = cur_counts)
+
+        emm = emmeans(model, ~ Protocol) 
+        sum_cont = summary(contrast(emm, list(sample_diff = c(1, -1))))
+
+        cur_avg = cur_counts %>%
+            group_by(Protocol) %>%
+            summarise(average = mean(Count, na.rm = TRUE))
+
+        cur_avg = as.data.frame(cur_avg)
+        
+        stat = data.frame(Contrast=paste(cur_protocols, collapse="_vs_"), CellType=celltype, 
+            T=sum_cont$t.ratio, P=sum_cont$p.value, Avg1=cur_avg$average[1], Avg2=cur_avg$average[2])
+
+        return(stat)
+        
+    })
+
+    stats = as.data.frame(do.call(rbind, statList))
+    stats$fdr = p.adjust(stats$P, method = "BH")
+
+    return(stats)
+    
+})
+
+stats = as.data.frame(do.call(rbind, statList))
+stats = stats[, c("Contrast", "CellType", "T", "P", "fdr", "Avg1", "Avg2")]
+
+stats = stats[order(stats$Contrast, stats$P), ]
+stats$P = formatC(stats$P, format = "e", digits = 2)
+stats$fdr = formatC(stats$fdr, format = "e", digits = 2)
+
+datatable(
+    stats,
+    extensions = 'Buttons',
+    caption = "Geneset Score for Cell Types",
+    rownames = FALSE,
+    options = list(
+        dom = 'Bfrtip', # B for buttons, frtip for other table features
+        buttons = c('csv', 'excel'), # Add CSV and Excel download buttons
+        pageLength = 15
+    )    
+) %>% 
+    formatRound(columns = c("T", "Avg1", "Avg2"), digits = 2)
+
+
+```
+
+# Geneset stats for brain regions
+
+Forebrain  
+Midbrain  
+Cerebellum  
+
+```{r region_score, echo=T, message=T, warning=F, collapse=T}
+
+regions = c("Forebrain", "Midbrain", "Cerebellum")
+
+test_gene_data = gene_data[gene_data$Region %in% regions, ]
+
+test_count_data = norm_data[norm_data$Gene %in% test_gene_data$MarkerGene, ]
+dim(test_count_data)
+
+contrasts = list()
+contrasts[[1]] = c("SCTLday60", "GSE233574")
+contrasts[[2]] = c("SCTLday60", "GSE247974")
+
+nconts = length(contrasts)
+
+statList = lapply(1:nconts, function(icont) {
+
+    statList = lapply(regions, function(region) {
+
+        print(region)
+    
+        geneset = test_gene_data[test_gene_data$Region==region, "MarkerGene"]
+    
+        cur_protocols = as.vector(contrasts[[icont]])
+        
+        cur_counts = test_count_data[which( (test_count_data$Gene %in% geneset) & (test_count_data$Protocol %in% cur_protocols) ), ]
+        cur_counts$Protocol = factor(cur_counts$Protocol, levels=cur_protocols)
+        cur_counts$Gene = as.factor(cur_counts$Gene)
+
+        model = lmer(Count ~ Protocol + (1 | Gene), data = cur_counts)
+
+        emm = emmeans(model, ~ Protocol) 
+        sum_cont = summary(contrast(emm, list(sample_diff = c(1, -1))))
+        
+        cur_avg = cur_counts %>%
+            group_by(Protocol) %>%
+            summarise(average = mean(Count, na.rm = TRUE))
+
+        cur_avg = as.data.frame(cur_avg)
+
+        stat = data.frame(Contrast=paste(cur_protocols, collapse="_vs_"), Region=region,  
+            T=sum_cont$t.ratio, P=sum_cont$p.value, Avg1=cur_avg$average[1], Avg2=cur_avg$average[2])
+
+        return(stat)
+        
+    })
+    
+    stats = as.data.frame(do.call(rbind, statList))
+    stats$fdr = p.adjust(stats$P, method = "BH")
+    
+    return(stats)
+
+})
+
+stats = as.data.frame(do.call(rbind, statList))
+stats = stats[, c("Contrast", "Region", "T", "P", "fdr", "Avg1", "Avg2")]
+
+stats = stats[order(stats$Contrast, stats$P), ]
+stats$P = formatC(stats$P, format = "e", digits = 2)
+stats$fdr = formatC(stats$fdr, format = "e", digits = 2)
+
+datatable(
+    stats,
+    extensions = 'Buttons',
+    caption = "Geneset Score for Region",
+    rownames = FALSE,
+    options = list(
+        dom = 'Bfrtip', # B for buttons, frtip for other table features
+        buttons = c('csv', 'excel'), # Add CSV and Excel download buttons
+        pageLength = 15
+    )    
+) %>% 
+    formatRound(columns = c("T", "Avg1", "Avg2"), digits = 2)
+
+
+```
+
+# Session Information
+
+```{r info, echo=T, message=T, warning=F, collapse=T}
+
+sessionInfo()
+
+rm(list=ls())
+
+
+```
+

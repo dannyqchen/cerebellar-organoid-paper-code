@@ -1,0 +1,135 @@
+---
+title: "hCBO merge data"
+author: "Qiang (Danny) Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    keep_md: true
+    highlight: tango
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: no
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  bibliography: biblio.bib
+vignette: |
+  %\VignetteIndexEntry{RNASeq} %\VignetteEngine{knitr::rmarkdown} %\VignetteEncoding{UTF-8} %\usepackage[utf8]{inputenc}
+---
+
+We integrated SCTL samples at day60 in our 2 month-old hCBO data with the following two datasets and identified DEGs among cerebellar markers across protocols. 
+
+For the quadrato lab, we focused on three samples below (they generated three replicates at day 60):  
+[GSE247974](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE247974)
+GSM7904010: organoid D1, scRNA-seq  
+GSM7904011: organoid D2, scRNA-seq  
+GSM7904012: organoid D3, scRNA-seq  
+
+For the pasca lab, we only focused on one sample (at day 72) below:  
+[GSE233574](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE233574)
+GSM7430706: OrganoidScreen; sample11; FGF2-50  
+
+There is only one sample (GSM7430706) in GSE233574. We did sub-sampling in cells of GSM7430706 and calculated psudo-bulk of sub-samples for comparisons. 
+
+
+```{r setup, echo=T, results="hide", message=F}
+# knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, echo=TRUE, dev="png", message=FALSE, error=FALSE, warning=FALSE)
+knitr::opts_chunk$set(echo=TRUE, warning=F, message=F)
+
+library("tidyr")
+library("dplyr")
+library("ggplot2")
+library("knitr")
+library("pheatmap")
+library("DT")
+
+library("Seurat")
+library("DESeq2")
+
+rm(list=ls())
+
+d_geo  = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/GEO/"
+d_sctl = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/ISB038/htseq_count/"
+
+d_proj = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/SCTLday60_GSE247974_GSE233574/"
+d_dat  = paste0(d_proj, "Data/")
+d_res  = paste0(d_proj, "Results/")
+
+
+```
+
+# Load SCTL data
+
+```{r load_sctl, eval=T, echo=T, results='hide'}
+
+f_count = paste0(d_dat, "count_matrix.SCTLday60_GSE247974_GSE233574.qced.rda")
+load(f_count)
+
+
+```
+
+# Normalize merged counts
+
+```{r norm, eval=T, echo=T, results='hide'}
+
+dds = DESeqDataSetFromMatrix(
+    countData = count_matrix,
+    colData = sampleInfo,
+    design = ~ 1
+)
+
+norm_matrix = vst(dds, blind = T)
+norm_matrix = assay(norm_matrix)
+
+
+```
+
+# Boxplot of normalized counts.
+
+```{r box_norm, eval=T, echo=T, collapse=T}
+
+boxplot(norm_matrix,main="vst transformed counts", ylab = "vst transformed read counts", las=2)
+
+
+```
+
+# PCA for normalized counts
+
+```{r pca_norm, eval=T, echo=T, results='hide'}
+
+pca_result = prcomp(t(norm_matrix)) 
+
+pca_scores = as.data.frame(pca_result$x)
+pca_scores = cbind(ID=rownames(pca_scores), pca_scores)
+pca_scores = merge(pca_scores, sampleInfo, by="ID")
+
+p = ggplot(pca_scores, aes(x=PC1, y=PC2, color=Protocol, shape=Sample)) +
+    geom_point(size = 5) +
+    theme_minimal() +
+    labs(title = "PCA plot for normalized merged counts",
+       x = paste0("PC1 (", round(summary(pca_result)$importance[2, 1] * 100, 1), "%)"),
+       y = paste0("PC2 (", round(summary(pca_result)$importance[2, 2] * 100, 1), "%)")) 
+
+print(p)
+
+f_fig = paste0(d_res, "PCA_plot.SCTLday60_GSE247974_GSE233574.normalized.pdf")
+ggsave(f_fig, p)
+
+```
+
+# Session Information
+
+```{r info, echo=T, message=T, warning=F, collapse=T}
+
+sessionInfo()
+
+rm(list=ls())
+
+
+```
+

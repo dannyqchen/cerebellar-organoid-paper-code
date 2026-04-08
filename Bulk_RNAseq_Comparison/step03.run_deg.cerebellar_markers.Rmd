@@ -1,0 +1,275 @@
+---
+title: "hCBO compare protocols using cerebellar markers"
+author: "Qiang (Danny) Chen"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    keep_md: true
+    highlight: tango
+    code_folding: hide
+    number_sections: yes
+    theme: united
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: no
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  bibliography: biblio.bib
+vignette: |
+  %\VignetteIndexEntry{RNASeq} %\VignetteEngine{knitr::rmarkdown} %\VignetteEncoding{UTF-8} %\usepackage[utf8]{inputenc}
+---
+
+We integrated SCTL samples at day60 in our 2 month-old hCBO data with the following two datasets and identified DEGs among cerebellar markers across protocols. 
+
+For the quadrato lab, we focused on three samples below (they generated three replicates at day 60):  
+[GSE247974](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE247974)
+GSM7904010: organoid D1, scRNA-seq  
+GSM7904011: organoid D2, scRNA-seq  
+GSM7904012: organoid D3, scRNA-seq  
+
+For the pasca lab, we only focused on one sample (at day 72) below:  
+[GSE233574](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE233574)
+GSM7430706: OrganoidScreen; sample11; FGF2-50  
+
+There is only one sample (GSM7430706) in GSE233574. We did sub-sampling in cells of GSM7430706 and calculated psudo-bulk of sub-samples for comparisons. 
+
+
+```{r setup, echo=T, results="hide", message=F}
+# knitr::opts_chunk$set(tidy=FALSE, cache=FALSE, echo=TRUE, dev="png", message=FALSE, error=FALSE, warning=FALSE)
+knitr::opts_chunk$set(echo=TRUE, warning=F, message=F)
+
+library("tidyr")
+library("dplyr")
+library("ggplot2")
+library("knitr")
+library("pheatmap")
+library("DT")
+
+library("Seurat")
+library("DESeq2")
+
+rm(list=ls())
+
+d_meta = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/Data/"
+d_proj = "/data/qiangchen/Projects/NCATS/SCTL/SeungMiRyu/hCBO/SCTLday60_GSE247974_GSE233574/"
+d_dat  = paste0(d_proj, "Data/")
+d_res  = paste0(d_proj, "Results/")
+
+
+```
+
+# Load merged data
+
+```{r load, eval=T, echo=T, results='hide'}
+
+f_count = paste0(d_dat, "count_matrix.SCTLday60_GSE247974_GSE233574.qced.rda")
+load(f_count)
+
+sctl_samples = sampleInfo[sampleInfo$Protocol=="SCTLday60", "ID"]
+
+f_cb = paste0(d_meta, "Full_Brain_Region_Marker_Table_Ryu_et_al.csv")
+gene_data = read.csv(f_cb)
+selected_genes = unique(gene_data$MarkerGene)
+print(length(selected_genes))
+
+matched = selected_genes %in% rownames(count_matrix)
+selected_genes = selected_genes[matched]
+print(length(selected_genes))
+
+
+```
+
+# DEG
+
+We compared protocols using 110 cerebellar markers. Among them, 106 genes were found in the merged data. 
+
+```{r deg, eval=T, echo=T, collapse=T}
+
+rownames(sampleInfo) = sampleInfo$ID
+
+dds = DESeqDataSetFromMatrix(
+    countData = count_matrix,
+    colData = sampleInfo,
+    design = ~ Protocol
+)
+
+dds = DESeq(dds, quiet=T)
+
+f_dds = paste0(d_dat, "deg_model.SCTLday60_GSE247974_GSE233574.rds")
+saveRDS(dds, f_dds)
+
+norm_counts = counts(dds, normalized = TRUE)
+rownames(norm_counts) = rownames(count_matrix)
+
+norm_counts = norm_counts[selected_genes, ]
+print(dim(norm_counts))
+
+f_norm = paste0(d_dat, "norm_counts.SCTLday60_GSE247974_GSE233574.CerebellarGenes.rds")
+saveRDS(norm_counts, f_norm)
+
+
+```
+
+# DEG: SCTLday60 vs GSE247974
+
+```{r contrast1, echo=T, message=T, warning=F, collapse=T}
+
+deg = results(dds, contrast=c("Protocol", "SCTLday60", "GSE247974"))
+
+deg = as.data.frame(deg)
+deg = cbind(Gene = rownames(deg), deg)
+
+colnames(deg) = c("Gene", "baseMean", "log2FC", "lfcSE", "stat", "pval", "padj")
+deg = deg[order(deg$padj),]
+
+f_deg = paste0(d_res, "deg.SCTLday60_vs_GSE247974.tsv")
+write.table(deg, f_deg, sep="\t", row.names=F, quote=F)
+
+deg.cb = deg[selected_genes, ]
+deg.cb = deg.cb[order(deg.cb$padj), ]
+
+f_deg = paste0(d_res, "deg.SCTLday60_vs_GSE247974.cerebellar_genes.tsv")
+write.table(deg.cb, f_deg, sep="\t", row.names=F, quote=F)
+
+datatable(
+    deg.cb,
+    caption = "SCTLday60 vs GSE247974",
+    rownames = FALSE,
+    options = list(
+        dom = 'Bfrtip', # B for buttons, frtip for other table features
+        buttons = c('csv', 'excel'), # Add CSV and Excel download buttons
+        pageLength = 10
+    )    
+) %>% 
+    formatRound(columns = c("baseMean", "log2FC", "lfcSE", "stat", "pval", "padj"), digits = 2)
+
+deg.cb.pos = deg.cb[deg.cb$log2FC>0, ]
+deg.cb.pos = deg.cb.pos[order(deg.cb.pos$log2FC, decreasing=T),]
+
+deg.cb.pos.top20 = deg.cb.pos[1:20, ]
+
+expr.top20 = norm_counts[deg.cb.pos.top20$Gene, c(which(colnames(norm_counts) %in% sctl_samples),
+    grep("^GSE247974", colnames(norm_counts)))]
+
+pheatmap(
+    expr.top20,
+    scale = "row",           
+    main = "Top 20 genes with expression in SCTLday60 higher than in GSE233574 (sorted by log2FC)",
+    fontsize_row = 10,   
+    fontsize_col = 10,   
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    cluster_cols = FALSE
+)
+
+deg.cb.neg = deg.cb[deg.cb$log2FC<=0, ]
+deg.cb.neg = deg.cb.neg[order(deg.cb.neg$log2FC, decreasing=F),]
+
+deg.cb.neg.top20 = deg.cb.neg[1:20, ]
+
+expr.top20 = norm_counts[deg.cb.neg.top20$Gene, c(which(colnames(norm_counts) %in% sctl_samples),
+    grep("^GSE247974", colnames(norm_counts)))]
+
+pheatmap(
+    expr.top20,
+    scale = "row",           
+    main = "Top 20 genes with expression in SCTLday60 lower than in GSE233574 (sorted by log2FC)",
+    fontsize_row = 10,   
+    fontsize_col = 10,   
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    cluster_cols = FALSE
+)
+
+
+```
+
+# DEG: SCTLday60 vs GSE233574
+
+```{r contrast2, echo=T, message=T, warning=F, collapse=T}
+
+deg = results(dds, contrast=c("Protocol", "SCTLday60", "GSE233574"))
+
+deg = as.data.frame(deg)
+deg = cbind(Gene = rownames(deg), deg)
+
+colnames(deg) = c("Gene", "baseMean", "log2FC", "lfcSE", "stat", "pval", "padj")
+deg = deg[order(deg$padj), ]
+
+f_deg = paste0(d_res, "deg.SCTLday60_vs_GSE233574.tsv")
+write.table(deg, f_deg, sep="\t", row.names=F, quote=F)
+
+deg.cb = deg[selected_genes, ]
+deg.cb = deg.cb[order(deg.cb$padj), ]
+
+f_deg = paste0(d_res, "deg.SCTLday60_vs_GSE233574.cerebellar_genes.tsv")
+write.table(deg.cb, f_deg, sep="\t", row.names=F, quote=F)
+
+datatable(
+    deg.cb,
+    extensions = 'Buttons',
+    caption = "SCTLday60 vs GSE233574",
+    rownames = FALSE,
+    options = list(
+        dom = 'Bfrtip', # B for buttons, frtip for other table features
+        buttons = c('csv', 'excel'), # Add CSV and Excel download buttons
+        pageLength = 10
+    )    
+) %>% 
+    formatRound(columns = c("baseMean", "log2FC", "lfcSE", "stat", "pval", "padj"), digits = 2)
+
+deg.cb.pos = deg.cb[deg.cb$log2FC>0, ]
+deg.cb.pos = deg.cb.pos[order(deg.cb.pos$log2FC, decreasing=T),]
+
+deg.cb.pos.top20 = deg.cb.pos[1:20, ]
+
+expr.top20 = norm_counts[deg.cb.pos.top20$Gene, c(which(colnames(norm_counts) %in% sctl_samples),
+    grep("^GSE233574", colnames(norm_counts)))]
+
+pheatmap(
+    expr.top20,
+    scale = "row",           
+    main = "Top 20 genes with expression in SCTLday60 higher than in GSE233574 (sorted by log2FC)",
+    fontsize_row = 10,   
+    fontsize_col = 10,   
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    cluster_cols = FALSE
+)
+
+deg.cb.neg = deg.cb[deg.cb$log2FC<=0, ]
+deg.cb.neg = deg.cb.neg[order(deg.cb.neg$log2FC, decreasing=F),]
+
+deg.cb.neg.top20 = deg.cb.neg[1:20, ]
+
+expr.top20 = norm_counts[deg.cb.neg.top20$Gene, c(which(colnames(norm_counts) %in% sctl_samples),
+    grep("^GSE233574", colnames(norm_counts)))]
+
+pheatmap(
+    expr.top20,
+    scale = "row",           
+    main = "Top 20 genes with expression in SCTLday60 lower than GSE233574 (sorted by log2FC)",
+    fontsize_row = 10,   
+    fontsize_col = 10,   
+    show_rownames = TRUE,
+    show_colnames = TRUE,
+    cluster_cols = FALSE
+)
+
+
+```
+
+# Session Information
+
+```{r info, echo=T, message=T, warning=F, collapse=T}
+
+sessionInfo()
+
+rm(list=ls())
+
+
+```
+
